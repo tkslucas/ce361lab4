@@ -1,0 +1,8 @@
+# Binaries
+RISCtakers_lab4
+risctakers_lab4
+
+# Outputs
+*.vcd
+mem_out.hex
+regs_out.hex
