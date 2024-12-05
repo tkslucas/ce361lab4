@@ -1,4 +1,4 @@
-// Template for Northwestern - CompEng 361 - Lab3
+// Template for Northwestern - CompEng 361 - Lab4
 // Groupname: RISCtakers
 // NetIDs: rap4819, ltb8987
 
@@ -106,7 +106,31 @@ module PipelinedCPU(halt, clk, rst);
    wire [`WORD_WIDTH-1:0] auipc_result;
    
    wire invalid_op;
+
+   //
+   // TODO: Using behavioral reg for now, make them into actual structural registers later
+   // IF/ID, need to store PC and InstWord
+   //
+   // Pipeline registers
+   // reg[63:0] pipeline_IF_ID; // Let's split this into 2 registers to make it easier to understand
+   reg [31:0] pipeline_IF_ID_PC;
+   reg [31:0] pipeline_IF_ID_InstWord;
+
+   // ID/EX, need to store PC, Rdata1, Rdata2, immediate
+   reg [31:0] pipeline_ID_EX_PC; 
+   reg [31:0] pipeline_ID_EX_Rdata1, ID_EX_Rdata2; 
+   reg [31:0] pipeline_ID_EX_immediate;
    
+   // EX/MEM, need to store PC, ALUresult, Data Address, data for store
+   reg [31:0] pipeline_EX_MEM_PC; 
+   reg [31:0] pipeline_EX_MEM_ALUresult;
+   reg [31:0] pipeline_EX_MEM_DataAddr;
+   reg [31:0] pipeline_EX_MEM_StoreData; 
+
+   // MEM/WB, need to store address, and data from load
+   reg [31:0] pipeline_MEM_WB_DataAddr;
+   reg [31:0] pipeline_MEM_WB_LoadData; 
+
    // Only supports R-TYPE and I-TYPE
    assign halt = invalid_op;
 
@@ -249,6 +273,11 @@ module PipelinedCPU(halt, clk, rst);
                 PC_Plus_4;
    
 endmodule // SingleCycleCPU
+
+//
+// TODO: I think we might remove the second ALU to simplify the pipeline,
+// cause we would need separate control signals for handling it
+//
 
 // responsible for immediate calculations
 module ALU_imm(out1, rs1, imm1, funca, eaCalc);
