@@ -70,7 +70,7 @@
 `define SIZE_HWORD 2'b01
 `define SIZE_WORD  2'b10
 
-module SingleCycleCPU(halt, clk, rst);
+module PipelinedCPU(halt, clk, rst);
    output halt;
    input clk, rst;
 
