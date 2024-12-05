@@ -121,6 +121,10 @@ module PipelinedCPU(halt, clk, rst);
    reg [31:0] pipeline_ID_EX_Rdata1, ID_EX_Rdata2; 
    reg [31:0] pipeline_ID_EX_immediate;
    reg [4:0]  pipeline_ID_EX_Rdst;
+   // Control signals for next pipeline register
+   reg pipeline_ID_EX_RegDst, pipeline_ID_EX_ALUOp1, pipeline_ID_EX_ALUOp0, pipeline_ID_EX_ALUSrc,
+       pipeline_ID_EX_Branch, pipeline_ID_EX_Mem_Read, pipeline_ID_EX_Mem_Write,
+       pipeline_ID_EX_Reg_Write, pipeline_ID_EX_Reg_Read;
    
    // EX/MEM, need to store PC, ALUresult, Data Address, data for store
    reg [31:0] pipeline_EX_MEM_PC; 
@@ -128,11 +132,16 @@ module PipelinedCPU(halt, clk, rst);
    reg [31:0] pipeline_EX_MEM_DataAddr;
    reg [31:0] pipeline_EX_MEM_StoreData; 
    reg [4:0]  pipeline_EX_MEM_Rdst;
+   // Control signals for next pipeline register
+   reg pipeline_EX_MEM_Branch, pipeline_EX_MEM_Mem_Read, pipeline_EX_MEM_Mem_Write,
+       pipeline_EX_MEM_Reg_Write, pipeline_EX_MEM_Reg_Read;
 
    // MEM/WB, need to store address, and data from load
    reg [31:0] pipeline_MEM_WB_DataAddr;
    reg [31:0] pipeline_MEM_WB_LoadData; 
    reg [4:0]  pipeline_MEM_WB_Rdst; // Write back to register file
+   // Control signals for next pipeline register
+   reg pipeline_MEM_WB_Reg_Write, pipeline_MEM_WB_Reg_Read;
 
    // Only supports R-TYPE and I-TYPE
    assign halt = invalid_op;
