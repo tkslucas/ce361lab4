@@ -74,21 +74,20 @@ module PipelinedCPU(halt, clk, rst);
    output halt;
    input clk, rst;
 
-   wire [`WORD_WIDTH-1:0] PC, InstWord;
+   wire [`WORD_WIDTH-1:0] PC, InstWord, InstWord_out;
+   wire [`WORD_WIDTH-1:0] NPC, PC_Plus_4;
    wire [`WORD_WIDTH-1:0] DataAddr, StoreData, DataWord;
    wire [1:0]  MemSize, load_size, store_size;
-   wire        MemWrEn;
+   wire        MemWrEn, MemReadEn;
    
    wire [4:0]  Rsrc1, Rsrc2, Rdst;
    wire [`WORD_WIDTH-1:0] Rdata1, Rdata2, RWrdata, EU_out;
    wire [`WORD_WIDTH-1 :0] immediate, immediate_i, immediate_j, immediate_b, immediate_st;
-   wire        RWrEn;
+   wire        RWrEn, MemToReg, RegRead;
    wire        ALUSrc, EACalc_control, muldiv_control;
    wire        Inv_R_type, Inv_I_type, Inv_Loads, Inv_B_type, Inv_J_type, Inv_U_type, Inv_S_type, Inv_MulDiv;
 
-   wire [`WORD_WIDTH-1:0] NPC, PC_Plus_4;
    wire [6:0]  opcode;
-
    wire [6:0]  funct7;
    wire [2:0]  funct3;
 
@@ -106,32 +105,110 @@ module PipelinedCPU(halt, clk, rst);
    wire [`WORD_WIDTH-1:0] auipc_result;
    
    wire invalid_op;
-
-   //
-   // TODO: Using behavioral reg for now, make them into actual structural registers later
+   
    // IF/ID, need to store PC and InstWord
-   //
    // Pipeline registers
    // reg[63:0] pipeline_IF_ID; // Let's split this into 2 registers to make it easier to understand
-   reg [31:0] pipeline_IF_ID_PC;
-   reg [31:0] pipeline_IF_ID_InstWord;
-
-   // ID/EX, need to store PC, Rdata1, Rdata2, immediate
-   reg [31:0] pipeline_ID_EX_PC; 
-   reg [31:0] pipeline_ID_EX_Rdata1, ID_EX_Rdata2; 
-   reg [31:0] pipeline_ID_EX_immediate;
-   reg [4:0]  pipeline_ID_EX_Rdst;
-   // Control signals for next pipeline register
-   reg pipeline_ID_EX_RegDst, pipeline_ID_EX_ALUOp1, pipeline_ID_EX_ALUOp0, pipeline_ID_EX_ALUSrc,
-       pipeline_ID_EX_Branch, pipeline_ID_EX_Mem_Read, pipeline_ID_EX_Mem_Write,
-       pipeline_ID_EX_Reg_Write, pipeline_ID_EX_Reg_Read;
    
+   // stall (WE) -- hold ; on the divs and mults
+   // we >> jumps in the last stage
+   // nops >> wire that holds add x0,x0,x0
+   // if we need something pushed out off the pipeline, put nops after it
+
+   // System State
+   Mem   MEM(.InstAddr(PC), .InstOut(InstWord), 
+              .DataAddr(DataAddr), .DataSize(MemSize), .DataIn(StoreData), .DataOut(DataWord), .WE(MemWrEn), .CLK(clk));
+
+   // Fetch Address Datapath
+   assign PC_Plus_4 = PC + 4;
+   assign NPC = (opcode == `OPCODE_JAL)  ? jal_target :
+                (opcode == `OPCODE_JALR) ? jalr_target :
+                branch_taken             ? branch_target :
+                PC_Plus_4;
+
+   Reg #(.width(32)) pipeline_IF_ID_PC(.Din(NPC), .Qout(PC), .WE(1'b1), .CLK(clk), .RST(rst));
+   Reg #(.width(32)) pipeline_IF_ID_InstWord(.Din(InstWord), .Qout(InstWord_out), .WE(1'b1), .CLK(clk), .RST(rst));
+   
+   // --- INSTRUCTION DECODE STAGE
+   assign opcode = InstWord[6:0];   
+   assign Rdst = InstWord[11:7]; 
+   assign Rsrc1 = InstWord[19:15]; 
+   assign Rsrc2 = InstWord[24:20];
+   assign funct3 = InstWord[14:12];  // R-Type, I-Type, S-Type
+   assign funct7 = InstWord[31:25];  // R-Type
+
+   assign immediate_i = {{20{InstWord[31]}}, InstWord[31:20]};  // I-type
+   assign immediate_b = {{19{InstWord[31]}}, InstWord[31], InstWord[7], InstWord[30:25], InstWord[11:8], 1'b0};
+   assign immediate_j = {{11{InstWord[31]}}, InstWord[31], InstWord[19:12], InstWord[20], InstWord[30:21], 1'b0}; // J-type
+   assign immediate_st = {{20{InstWord[31]}}, InstWord[31:25], InstWord[11:7]}; // S-type
+   assign imm_upper = {InstWord[31:12], 12'b0};  // U-type
+
+   assign immediate = (opcode == `OPCODE_STORE) ? immediate_st :
+                      ((opcode == `OPCODE_LOAD || opcode == `OPCODE_COMPUTE_IMM)) ? immediate_i : 
+                      (opcode == `OPCODE_BRANCH) ? immediate_b : 
+                      (opcode ==  `OPCODE_JAL || opcode == `OPCODE_JALR) ? immediate_j : imm_upper;
+   
+   wire [`WORD_WIDTH-1:0] R1_data_out, PC_out;
+   wire [`WORD_WIDTH-1:0] R2_data_out;
+   wire [4:0] Rdst_out;
+   wire [`WORD_WIDTH-1:0] immediate_out;
+
+    // System State 
+   RegFile RF(.AddrA(Rsrc1), .DataOutA(Rdata1), 
+	           .AddrB(Rsrc2), .DataOutB(Rdata2), 
+	           .AddrW(Rdst), .DataInW(RWrdata), .WenW(RWrEn), .CLK(clk));
+   
+   // ID/EX, need to store PC, Rdata1, Rdata2, immediate
+   Reg #(.width(32)) pipeline_ID_EX_PC(.Din(PC), .Qout(PC_out), .WE(1'b1), .CLK(clk), .RST(rst));
+   Reg #(.width(32)) pipeline_ID_EX_Rdata1(.Din(Rdata1), .Qout(R1_data_out), .WE(1'b1), .CLK(clk), .RST(rst));
+   Reg #(.width(32)) ID_EX_Rdata2 (.Din(Rdata2), .Qout(R2_data_out), .WE(1'b1), .CLK(clk), .RST(rst));
+   Reg #(.width(32)) pipeline_ID_EX_immediate(.Din(immediate), .Qout(immediate_out), .WE(1'b1), .CLK(clk), .RST(rst));
+   Reg #(.width(5)) pipeline_ID_EX_Rdst (.Din(Rdst), .Qout(Rdst_out), .WE(1'b1), .CLK(clk), .RST(rst)); // to WB stage
+              
+   // Control signals for Next Stage Pipeline Register
+   Reg #(.width(1)) pipeline_ID_EX_ALUOp1();
+   Reg #(.width(1)) pipeline_ID_EX_ALUOp0();
+   Reg #(.width(1)) pipeline_ID_EX_ALUSrc(.Din(ALUSrc), .Qout(ALUSrc_out), .WE(1'b1), .CLK(clk), .RST(rst));
+   Reg #(.width(1)) pipeline_ID_EX_Branch(.Din(branch_taken), .Qout(branch_taken_out), .WE(1'b1), .CLK(clk), .RST(rst)); 
+   Reg #(.width(1)) pipeline_ID_EX_Mem_Read(.Din(MemReadEn), .Qout(mem_read_out), .WE(1'b1), .CLK(clk), .RST(rst));
+   Reg #(.width(1)) pipeline_ID_EX_Mem_Write(.Din(MemWrEn), .Qout(mem_write_out), .WE(1'b1), .CLK(clk), .RST(rst));
+   Reg #(.width(1)) pipeline_ID_EX_Reg_Write(.Din(RegWrEn), .Qout(reg_write_out), .WE(1'b1), .CLK(clk), .RST(rst));
+   Reg #(.width(1)) pipeline_ID_EX_Mem_To_Reg(.Din(MemToReg), .Qout(mem_to_reg_out), .WE(1'b1), .CLK(clk), .RST(rst));
+   Reg #(.width(1)) pipeline_ID_EX_Reg_Read(.Din(RegRead), .Qout(reg_read_outt), .WE(1'b1), .CLK(clk), .RST(rst));
+
+   wire branch_taken_out, mem_read_out, mem_write_out,reg_write_out, mem_to_reg_out, reg_read_out;
+   wire ALUSrc_out;
+
+   assign branch_taken = (opcode == `OPCODE_BRANCH) && (
+                         (funct3 == `FUNC_BEQ  && (Rdata1 == Rdata2)) ||   // BEQ
+                         (funct3 == `FUNC_BNE  && (Rdata1 != Rdata2)) ||   // BNE
+                         (funct3 == `FUNC_BLT  && ($signed(Rdata1) < $signed(Rdata2))) || // BLT
+                         (funct3 == `FUNC_BGE  && ($signed(Rdata1) >= $signed(Rdata2))) || // BGE
+                         (funct3 == `FUNC_BLTU && (Rdata1 < Rdata2)) ||    // BLTU (unsigned)
+                         (funct3 == `FUNC_BGEU && (Rdata1 >= Rdata2)));     // BGEU (unsigned)
+
+   assign MemReadEn =  !invalid_op && (opcode == `OPCODE_LOAD);
+
+   assign MemWrEn = !invalid_op && (opcode == `OPCODE_STORE);
+  
+   assign MemToReg = !invalid_op && (opcode == `OPCODE_LOAD);
+   
+   assign RegRead = !invalid_op && (opcode == `OPCODE_COMPUTE || opcode == `OPCODE_COMPUTE_IMM || opcode == `OPCODE_LOAD || 
+                    opcode == `OPCODE_STORE || opcode == `OPCODE_BRANCH);
+
+   assign RWrEn = !invalid_op && (opcode == `OPCODE_COMPUTE || opcode == `OPCODE_COMPUTE_IMM || opcode == `OPCODE_LOAD ||
+                   opcode == `OPCODE_LUI || opcode == `OPCODE_AUIPC || opcode == `OPCODE_MULDIV ||
+                   opcode == `OPCODE_JAL || opcode == `OPCODE_JALR || opcode == `OPCODE_MULDIV);
+
+   assign ALUSrc = !invalid_op && (opcode == `OPCODE_COMPUTE_IMM || opcode == `OPCODE_LOAD || opcode == `OPCODE_STORE) ? 1'b1 : 1'b0;
+
    // EX/MEM, need to store PC, ALUresult, Data Address, data for store
    reg [31:0] pipeline_EX_MEM_PC; 
    reg [31:0] pipeline_EX_MEM_ALUresult;
    reg [31:0] pipeline_EX_MEM_DataAddr;
    reg [31:0] pipeline_EX_MEM_StoreData; 
-   reg [4:0]  pipeline_EX_MEM_Rdst;
+   reg [4:0]  pipeline_EX_MEM_Rdst; 
+
    // Control signals for next pipeline register
    reg pipeline_EX_MEM_Branch, pipeline_EX_MEM_Mem_Read, pipeline_EX_MEM_Mem_Write,
        pipeline_EX_MEM_Reg_Write, pipeline_EX_MEM_Reg_Read;
@@ -178,40 +255,11 @@ module PipelinedCPU(halt, clk, rst);
                         || funct3 == `FUNC_REM || funct3 == `FUNC_REMU));
 
    assign invalid_op = !(Inv_R_type || Inv_I_type || Inv_Loads || Inv_B_type || Inv_J_type || Inv_U_type || Inv_S_type || Inv_MulDiv ); 
-     
-   // System State 
-   Mem   MEM(.InstAddr(PC), .InstOut(InstWord), 
-            .DataAddr(DataAddr), .DataSize(MemSize), .DataIn(StoreData), .DataOut(DataWord), .WE(MemWrEn), .CLK(clk));
-
-   RegFile RF(.AddrA(Rsrc1), .DataOutA(Rdata1), 
-	           .AddrB(Rsrc2), .DataOutB(Rdata2), 
-	           .AddrW(Rdst), .DataInW(RWrdata), .WenW(RWrEn), .CLK(clk));
-
-   Reg PC_REG(.Din(NPC), .Qout(PC), .WE(1'b1), .CLK(clk), .RST(rst));
-
-   // Instruction Decode
-   assign opcode = InstWord[6:0];   
-   assign Rdst = InstWord[11:7]; 
-   assign Rsrc1 = InstWord[19:15]; 
-   assign funct3 = InstWord[14:12];  // R-Type, I-Type, S-Type
-   assign immediate_i = {{20{InstWord[31]}}, InstWord[31:20]};  // I-type
-   assign immediate_b = {{19{InstWord[31]}}, InstWord[31], InstWord[7], InstWord[30:25], InstWord[11:8], 1'b0};
-   assign immediate_j = {{11{InstWord[31]}}, InstWord[31], InstWord[19:12], InstWord[20], InstWord[30:21], 1'b0}; // J-type
-   assign immediate_st = {{20{InstWord[31]}}, InstWord[31:25], InstWord[11:7]}; // S-type
-   assign Rsrc2 = InstWord[24:20];
-   assign funct7 = InstWord[31:25];  // R-Type
-   assign imm_upper = {InstWord[31:12], 12'b0}; 
-
-
-   assign immediate = (opcode == `OPCODE_STORE) ? immediate_st :
-                      ((opcode == `OPCODE_LOAD || opcode == `OPCODE_COMPUTE_IMM)) ? immediate_i : 32'hXX;
 
    // control signal for R-type vs I-type instruction (0 for R, 1 for immediate)
-   assign ALUSrc = !invalid_op && (opcode == `OPCODE_COMPUTE_IMM) ? 1'b1 : 1'b0;
+   
    assign EACalc_control =  (opcode == `OPCODE_LOAD || opcode == `OPCODE_STORE) ? 1'b1: 1'b0;
    assign muldiv_control = !invalid_op && (opcode == `OPCODE_MULDIV) && (funct7 == `AUX_FUNC_M_EXT) ? 1'b1: 1'b0;
-
-   assign MemWrEn = !invalid_op && (opcode == `OPCODE_STORE);
 
    assign DataAddr = (opcode == `OPCODE_LOAD || opcode == `OPCODE_STORE) ? EU_out: 32'h0000;
 
@@ -229,10 +277,6 @@ module PipelinedCPU(halt, clk, rst);
 
    assign MemSize = (opcode == `OPCODE_LOAD) ? load_size :
                     (opcode == `OPCODE_STORE) ? store_size : 2'bXX;
-                     
-   assign RWrEn = (opcode == `OPCODE_COMPUTE || opcode == `OPCODE_COMPUTE_IMM || opcode == `OPCODE_LOAD ||
-                   opcode == `OPCODE_LUI || opcode == `OPCODE_AUIPC || opcode== `OPCODE_MULDIV ||
-                   opcode == `OPCODE_JAL || opcode == `OPCODE_JALR);
    
    assign RWrdata = (opcode == `OPCODE_LOAD && funct3 == `FUNC_LW) ? DataWord :
                     (opcode == `OPCODE_LOAD && funct3 == `FUNC_LH) ? {{16{DataWord[15]}}, DataWord[15:0]} :
@@ -248,15 +292,7 @@ module PipelinedCPU(halt, clk, rst);
    // Supports B-Type instructions
    // Calculate branch target address
    assign branch_target = PC + immediate_b;
-   assign branch_taken = (opcode == `OPCODE_BRANCH) && (
-     (funct3 == `FUNC_BEQ  && (Rdata1 == Rdata2)) ||   // BEQ
-     (funct3 == `FUNC_BNE  && (Rdata1 != Rdata2)) ||   // BNE
-     (funct3 == `FUNC_BLT  && ($signed(Rdata1) < $signed(Rdata2))) || // BLT
-     (funct3 == `FUNC_BGE  && ($signed(Rdata1) >= $signed(Rdata2))) || // BGE
-     (funct3 == `FUNC_BLTU && (Rdata1 < Rdata2)) ||    // BLTU (unsigned)
-     (funct3 == `FUNC_BGEU && (Rdata1 >= Rdata2))      // BGEU (unsigned)
-   );
-
+  
    // Jumps
    assign jal_target = PC + immediate_j;
    assign jalr_target = (Rdata1 + immediate_i) & ~1;
@@ -276,13 +312,6 @@ module PipelinedCPU(halt, clk, rst);
                     .aluSrc(ALUSrc),
                     .EACalc(EACalc_control),
                     .MulDiv(muldiv_control));
-
-   // Fetch Address Datapath
-   assign PC_Plus_4 = PC + 4;
-   assign NPC = (opcode == `OPCODE_JAL)  ? jal_target :
-                (opcode == `OPCODE_JALR) ? jalr_target :
-                branch_taken             ? branch_target :
-                PC_Plus_4;
    
 endmodule // SingleCycleCPU
 
