@@ -390,3 +390,9 @@ module ExecutionUnit(out, opA, opB, func, auxFunc, imm, aluSrc, EACalc, MulDiv);
                .muldivresult(muldiv_result));
 
 endmodule // ExecutionUnit
+
+module
+
+module ForwardingUnit(Rs, Rt1, Rt2, Rd, MEM_WB_RegisterRd, EX_MEM_RegisterRd, EX_MEM_WB_control, MEM_WB_control, ForwardA, ForwardB);
+
+endmodule
