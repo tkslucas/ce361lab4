@@ -187,6 +187,8 @@ module PipelinedCPU(halt, clk, rst);
    
    wire [`WORD_WIDTH-1:0] R1_data_out, PC_out, immediate_out, R2_data_out;
    wire [4:0] Rdst_out;
+   wire [2:0] funct3_out;
+   wire [6:0] funct7_out;
    
    // ID/EX, need to store PC, Rdata1, Rdata2, immediate
    Reg #(.width(32)) pipeline_ID_EX_PC(.Din(PC), .Qout(PC_out), .WE(1'b1), .CLK(clk), .RST(rst));
@@ -196,7 +198,7 @@ module PipelinedCPU(halt, clk, rst);
    Reg #(.width(5)) pipeline_ID_EX_Rdst (.Din(Rdst), .Qout(Rdst_out), .WE(1'b1), .CLK(clk), .RST(rst)); // to WB stage
               
    // Control signals for Next Stage Pipeline Register
-   Reg #(.width(2)) pipeline_ID_EX_ALUOp();
+   Reg #(.width(2)) pipeline_ID_EX_ALUOp(.Din(ALUOp), .Qout(ALUOp_out), .WE(1'b1), .CLK(clk), .RST(rst));
    Reg #(.width(1)) pipeline_ID_EX_ALUSrc(.Din(ALUSrc), .Qout(ALUSrc_out), .WE(1'b1), .CLK(clk), .RST(rst));
    Reg #(.width(1)) pipeline_ID_EX_Branch(.Din(branch_taken), .Qout(branch_taken_out), .WE(1'b1), .CLK(clk), .RST(rst)); 
    Reg #(.width(1)) pipeline_ID_EX_Mem_Read(.Din(MemReadEn), .Qout(mem_read_out), .WE(1'b1), .CLK(clk), .RST(rst));
@@ -207,6 +209,7 @@ module PipelinedCPU(halt, clk, rst);
 
    wire branch_taken_out, mem_read_out, mem_write_out,reg_write_out, mem_to_reg_out, reg_read_out;
    wire ALUSrc_out;
+   wire [1:0] ALUOp, ALUOp_out;
 
    assign branch_taken = (opcode == `OPCODE_BRANCH) && (
                          (funct3 == `FUNC_BEQ  && (Rdata1 == Rdata2)) ||   // BEQ
@@ -234,7 +237,8 @@ module PipelinedCPU(halt, clk, rst);
 
    // ------------------------------------------------ EX/MEM ----------------------------------------------------------------
    // need to store PC, ALUresult, Data Address, data for store
-   wire [`WORD_WIDTH-1:0] PC_mem, Rdst_mem, ALU_result_mem, DataAddr_mem, StoreData_mem;
+   wire [`WORD_WIDTH-1:0] PC_mem, ALU_result_mem, DataAddr_mem, StoreData_mem;
+   wire [4:0] Rdst_mem;
    wire branch_mem, mem_read_mem, mem_write_mem, reg_write_mem, mem_to_reg_mem, reg_read_mem;
 
    Reg #(.width(32)) pipeline_EX_MEM_PC (.Din(PC_out), .Qout(PC_mem), .WE(1'b1), .CLK(clk), .RST(rst));
@@ -260,8 +264,9 @@ module PipelinedCPU(halt, clk, rst);
 
    // ------------------------------------------------ MEM/WB ----------------------------------------------------------------
    // need to store address, and data from load, and data to be written into rd
-   wire [`WORD_WIDTH-1:0] Rdst_wb, LoadData_wb, ALU_result_wb, DataAddr_wb;
-   wire reg_write_wb, reg_read_wb
+   wire [`WORD_WIDTH-1:0] LoadData_wb, ALU_result_wb, DataAddr_wb;
+   wire [4:0] Rdst_wb;
+   wire reg_write_wb, reg_read_wb;
 
    Reg #(.width(32)) pipeline_MEM_WB_ALUresult (.Din(ALU_result_mem), .Qout(ALU_result_wb), .WE(1'b1), .CLK(clk), .RST(rst));
    Reg #(.width(32)) pipeline_MEM_WB_DataAddr (.Din(DataAddr_mem), .Qout(DataAddr_wb), .WE(1'b1), .CLK(clk), .RST(rst));
@@ -318,15 +323,15 @@ module PipelinedCPU(halt, clk, rst);
    assign auipc_result = PC + imm_upper;
 
    // Supports R-Type and I-type instructions and Loads
-   
-   ExecutionUnit EU(.out(pipeline_EX_MEM_ALUresult),
-                    .opA(pipeline_ID_EX_Rdata1), 
-                    .opB(pipeline_ID_EX_Rdata2), 
-                    .funct3(pipeline_ID_EX_funct3), 
-                    .funct7(pipeline_ID_EX_funct7), 
-                    .imm(pipeline_ID_EX_immediate), 
-                    .aluSrc(pipeline_ID_EX_ALUSrc),
-                    .aluOp(pipeline_ID_EX_ALUOp));
+   wire [`WORD_WIDTH-1:0] ALU_result;
+   ExecutionUnit EU(.out(ALU_result),
+                    .opA(R1_data_out), 
+                    .opB(R2_data_out), 
+                    .funct3(funct3_out), 
+                    .funct7(funct7_out), 
+                    .imm(immediate_out), 
+                    .aluSrc(ALUSrc_out),
+                    .aluOp(ALUOp_out));
 
 endmodule // SingleCycleCPU
 
@@ -413,7 +418,7 @@ module ALUControl(ALUControl, funct3, funct7, ALUOp);
     output [`ALU_CONTROL_WIDTH-1:0] ALUControl;
     input  [2:0] funct3;
     input  [6:0] funct7;
-    input  [1:0] aluOp;
+    input  [1:0] ALUOp;
     assign ALUControl = (ALUOp == 2'b00) ? 5'b00000 : // loads, stores, jal, jalr -> add
                         // Other ALUOp? If we move branches forward, no need for ALU
                         (ALUOp == 2'b10) ? // R-type instructions, need to check funct3 and funct7
@@ -441,13 +446,13 @@ endmodule
 
 module ExecutionUnit(out, opA, opB, funct3, funct7, imm, aluSrc, aluOp);
    output [`WORD_WIDTH-1:0] out;
-   input  [`WORD_WIDTH-1:0]  opA, opB, imm;
+   input  [`WORD_WIDTH-1:0] opA, opB, imm;
    input  [2:0] funct3;
    input  [6:0] funct7;
    input  [1:0] aluOp;
    input  aluSrc;
 
-   wire [`WORD_WIDTH-1:0] op_muxed;
+   wire [`WORD_WIDTH-1:0] opB_muxed;
    wire [`ALU_CONTROL_WIDTH-1:0] ALUControl;
    
    ALU alu(.out(out),
@@ -455,7 +460,10 @@ module ExecutionUnit(out, opA, opB, funct3, funct7, imm, aluSrc, aluOp);
            .inB(opB_muxed), 
            .ALUControl(ALUControl));
 
-   ALUControl alu_control(ALUControl, funct3, funct7, ALUOp);
+   ALUControl alu_control(.ALUControl(ALUControl),
+                          .funct3(funct3),
+                          .funct7(funct7),
+                          .ALUOp(aluOp));
 
    ALU_imm_mux imm_mux(.out(opB_muxed),
                        .rs2(opB), .imm(imm),
