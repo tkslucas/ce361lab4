@@ -186,13 +186,17 @@ module PipelinedCPU(halt, clk, rst);
    
    wire [`WORD_WIDTH-1:0] R1_data_out, PC_out, immediate_out, R2_data_out;
    wire [4:0] Rdst_out;
+   wire [2:0] funct3_out;
+   wire [6:0] funct7_out;
    
    // ID/EX, need to store PC, Rdata1, Rdata2, immediate
    Reg #(.width(32)) pipeline_ID_EX_PC(.Din(PC), .Qout(PC_out), .WE(1'b1), .CLK(clk), .RST(rst));
    Reg #(.width(32)) pipeline_ID_EX_Rdata1(.Din(Rdata1), .Qout(R1_data_out), .WE(1'b1), .CLK(clk), .RST(rst));
    Reg #(.width(32)) ID_EX_Rdata2 (.Din(Rdata2), .Qout(R2_data_out), .WE(1'b1), .CLK(clk), .RST(rst));
    Reg #(.width(32)) pipeline_ID_EX_immediate(.Din(immediate), .Qout(immediate_out), .WE(1'b1), .CLK(clk), .RST(rst));
-   Reg #(.width(5)) pipeline_ID_EX_Rdst (.Din(Rdst), .Qout(Rdst_out), .WE(1'b1), .CLK(clk), .RST(rst)); // to WB stage
+   Reg #(.width(5))  pipeline_ID_EX_Rdst (.Din(Rdst), .Qout(Rdst_out), .WE(1'b1), .CLK(clk), .RST(rst)); // to WB stage
+   Reg #(.width(3))  pipeline_ID_EX_funct3 (.Din(funct3), .Qout(funct3_out), .WE(1'b1), .CLK(clk), .RST(rst)); // to EX stage
+   Reg #(.width(7))  pipeline_ID_EX_funct7 (.Din(funct7), .Qout(funct7_out), .WE(1'b1), .CLK(clk), .RST(rst)); // to EX stage
               
    // Control signals for Next Stage Pipeline Register
    Reg #(.width(2)) pipeline_ID_EX_ALUOp();
@@ -202,10 +206,11 @@ module PipelinedCPU(halt, clk, rst);
    Reg #(.width(1)) pipeline_ID_EX_Mem_Write(.Din(MemWrEn), .Qout(mem_write_out), .WE(1'b1), .CLK(clk), .RST(rst));
    Reg #(.width(1)) pipeline_ID_EX_Reg_Write(.Din(RegWrEn), .Qout(reg_write_out), .WE(1'b1), .CLK(clk), .RST(rst));
    Reg #(.width(1)) pipeline_ID_EX_Mem_To_Reg(.Din(MemToReg), .Qout(mem_to_reg_out), .WE(1'b1), .CLK(clk), .RST(rst));
-   Reg #(.width(1)) pipeline_ID_EX_Reg_Read(.Din(RegRead), .Qout(reg_read_outt), .WE(1'b1), .CLK(clk), .RST(rst));
+   Reg #(.width(1)) pipeline_ID_EX_Reg_Read(.Din(RegRead), .Qout(reg_read_out), .WE(1'b1), .CLK(clk), .RST(rst));
+   Reg #(.width(1)) pipeline_ID_EX_Jump(.Din(isJump), .Qout(isJump_out), .WE(1'b1), .CLK(clk), .RST(rst));
 
    wire branch_taken_out, mem_read_out, mem_write_out,reg_write_out, mem_to_reg_out, reg_read_out;
-   wire ALUSrc_out;
+   wire ALUSrc_out, isJump_out;
 
    assign branch_taken = (opcode == `OPCODE_BRANCH) && (
                          (funct3 == `FUNC_BEQ  && (Rdata1 == Rdata2)) ||   // BEQ
@@ -227,14 +232,15 @@ module PipelinedCPU(halt, clk, rst);
    assign RWrEn = !invalid_op && (opcode == `OPCODE_COMPUTE || opcode == `OPCODE_COMPUTE_IMM || opcode == `OPCODE_LOAD ||
                    opcode == `OPCODE_LUI || opcode == `OPCODE_AUIPC || opcode == `OPCODE_MULDIV ||
                    opcode == `OPCODE_JAL || opcode == `OPCODE_JALR || opcode == `OPCODE_MULDIV);
+   
+   assign isJump = !invalidop && (opcode == `OPCODE_JAL || opcode == `OPCODE_JALR);
 
    assign ALUSrc = !invalid_op && (opcode == `OPCODE_COMPUTE_IMM || opcode == `OPCODE_LOAD || opcode == `OPCODE_STORE) ? 1'b1 : 1'b0;
-
 
    // ------------------------------------------------ EX/MEM ----------------------------------------------------------------
    // need to store PC, ALUresult, Data Address, data for store
    wire [`WORD_WIDTH-1:0] PC_mem, Rdst_mem, ALU_result_mem, DataAddr_mem, StoreData_mem;
-   wire branch_mem, mem_read_mem, mem_write_mem, reg_write_mem, mem_to_reg_mem, reg_read_mem;
+   wire branch_mem, mem_read_mem, mem_write_mem, reg_write_mem, mem_to_reg_mem, reg_read_mem, isJump_mem;
 
    Reg #(.width(32)) pipeline_EX_MEM_PC (.Din(PC_out), .Qout(PC_mem), .WE(1'b1), .CLK(clk), .RST(rst));
    Reg #(.width(32)) pipeline_EX_MEM_ALUresult (.Din(ALU_result), .Qout(ALU_result_mem), .WE(1'b1), .CLK(clk), .RST(rst));
@@ -256,16 +262,18 @@ module PipelinedCPU(halt, clk, rst);
    Reg #(.width(1)) pipeline_EX_MEM_Reg_Write (.Din(reg_write_out), .Qout(reg_write_mem), .WE(1'b1), .CLK(clk), .RST(rst));
    Reg #(.width(1)) pipeline_EX_MEM_Reg_Read (.Din(reg_read_out), .Qout(reg_read_mem), .WE(1'b1), .CLK(clk), .RST(rst));
    Reg #(.width(1)) pipeline_EX_MEM_Mem_To_Reg (.Din(mem_to_reg_out), .Qout(mem_to_reg_mem), .WE(1'b1), .CLK(clk), .RST(rst));
+   Reg #(.width(1)) pipeline_EX_MEM_Jump(.Din(isJump_out), .Qout(isJump_mem), .WE(1'b1), .CLK(clk), .RST(rst));
 
    // ------------------------------------------------ MEM/WB ----------------------------------------------------------------
    // need to store address, and data from load, and data to be written into rd
    wire [`WORD_WIDTH-1:0] Rdst_wb, LoadData_wb, ALU_result_wb, DataAddr_wb;
-   wire reg_write_wb, reg_read_wb
+   wire reg_write_wb, reg_read_wb, isJump_wb;
 
    Reg #(.width(32)) pipeline_MEM_WB_ALUresult (.Din(ALU_result_mem), .Qout(ALU_result_wb), .WE(1'b1), .CLK(clk), .RST(rst));
    Reg #(.width(32)) pipeline_MEM_WB_DataAddr (.Din(DataAddr_mem), .Qout(DataAddr_wb), .WE(1'b1), .CLK(clk), .RST(rst));
    Reg #(.width(32)) pipeline_MEM_WB_LoadData (.Din(DataWord), .Qout(LoadData_wb), .WE(1'b1), .CLK(clk), .RST(rst));
    Reg #(.width(5))  pipeline_MEM_WB_Rdst (.Din(Rdst_mem), .Qout(Rdst_wb), .WE(1'b1), .CLK(clk), .RST(rst));
+   Reg #(.width(1))  pipeline_MEM_WB_Jump(.Din(isJump_mem), .Qout(isJump_wb), .WE(1'b1), .CLK(clk), .RST(rst));
 
    // Control signals for WB stage
    Reg #(.width(1)) pipeline_MEM_WB_Reg_Write (.Din(reg_write_mem), .Qout(reg_write_wb), .WE(1'b1), .CLK(clk), .RST(rst));
@@ -274,7 +282,7 @@ module PipelinedCPU(halt, clk, rst);
    // System State
    Mem   MEM(.InstAddr(PC), .InstOut(InstWord), 
               .DataAddr(DataAddr), .DataSize(MemSize), .DataIn(StoreData), .DataOut(DataWord), .WE(MemWrEn), .CLK(clk));
-              
+
    RegFile RF(.AddrA(Rsrc1), .DataOutA(Rdata1), 
 	           .AddrB(Rsrc2), .DataOutB(Rdata2), 
 	           .AddrW(Rdst), .DataInW(RWrdata), .WenW(RWrEn), .CLK(clk));
