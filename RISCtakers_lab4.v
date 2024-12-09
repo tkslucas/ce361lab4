@@ -66,9 +66,13 @@
 `define AUX_FUNC_SUB    7'b0100000  // same for sra
 `define AUX_FUNC_M_EXT  7'b0000001  // same for all RV32M instructions
 
+// ---------------------------- MEM_SIZES --------------------------------------
 `define SIZE_BYTE  2'b00
 `define SIZE_HWORD 2'b01
 `define SIZE_WORD  2'b10
+
+// ------------------------------------------------------------------------------
+`define NOP 32'h00000013 // for stalls
 
 module PipelinedCPU(halt, clk, rst);
    output halt;
@@ -83,9 +87,9 @@ module PipelinedCPU(halt, clk, rst);
    wire [4:0]  Rsrc1, Rsrc2, Rdst;
    wire [`WORD_WIDTH-1:0] Rdata1, Rdata2, RWrdata, EU_out;
    wire [`WORD_WIDTH-1 :0] immediate, immediate_i, immediate_j, immediate_b, immediate_st;
-   wire        RWrEn, MemToReg, RegRead;
-   wire        ALUSrc, EACalc_control, muldiv_control;
-   wire        Inv_R_type, Inv_I_type, Inv_Loads, Inv_B_type, Inv_J_type, Inv_U_type, Inv_S_type, Inv_MulDiv;
+   wire                    RWrEn, MemToReg, RegRead;
+   wire                    ALUSrc, EACalc_control, muldiv_control;
+   wire                    Inv_R_type, Inv_I_type, Inv_Loads, Inv_B_type, Inv_J_type, Inv_U_type, Inv_S_type, Inv_MulDiv;
 
    wire [6:0]  opcode;
    wire [6:0]  funct7;
@@ -105,122 +109,7 @@ module PipelinedCPU(halt, clk, rst);
    wire [`WORD_WIDTH-1:0] auipc_result;
    
    wire invalid_op;
-   
-   // IF/ID, need to store PC and InstWord
-   // Pipeline registers
-   // reg[63:0] pipeline_IF_ID; // Let's split this into 2 registers to make it easier to understand
-   
-   // stall (WE) -- hold ; on the divs and mults
-   // we >> jumps in the last stage
-   // nops >> wire that holds add x0,x0,x0
-   // if we need something pushed out off the pipeline, put nops after it
 
-   // System State
-   Mem   MEM(.InstAddr(PC), .InstOut(InstWord), 
-              .DataAddr(DataAddr), .DataSize(MemSize), .DataIn(StoreData), .DataOut(DataWord), .WE(MemWrEn), .CLK(clk));
-
-   // Fetch Address Datapath
-   assign PC_Plus_4 = PC + 4;
-   assign NPC = (opcode == `OPCODE_JAL)  ? jal_target :
-                (opcode == `OPCODE_JALR) ? jalr_target :
-                branch_taken             ? branch_target :
-                PC_Plus_4;
-
-   Reg #(.width(32)) pipeline_IF_ID_PC(.Din(NPC), .Qout(PC), .WE(1'b1), .CLK(clk), .RST(rst));
-   Reg #(.width(32)) pipeline_IF_ID_InstWord(.Din(InstWord), .Qout(InstWord_out), .WE(1'b1), .CLK(clk), .RST(rst));
-   
-   // --- INSTRUCTION DECODE STAGE
-   assign opcode = InstWord[6:0];   
-   assign Rdst = InstWord[11:7]; 
-   assign Rsrc1 = InstWord[19:15]; 
-   assign Rsrc2 = InstWord[24:20];
-   assign funct3 = InstWord[14:12];  // R-Type, I-Type, S-Type
-   assign funct7 = InstWord[31:25];  // R-Type
-
-   assign immediate_i = {{20{InstWord[31]}}, InstWord[31:20]};  // I-type
-   assign immediate_b = {{19{InstWord[31]}}, InstWord[31], InstWord[7], InstWord[30:25], InstWord[11:8], 1'b0};
-   assign immediate_j = {{11{InstWord[31]}}, InstWord[31], InstWord[19:12], InstWord[20], InstWord[30:21], 1'b0}; // J-type
-   assign immediate_st = {{20{InstWord[31]}}, InstWord[31:25], InstWord[11:7]}; // S-type
-   assign imm_upper = {InstWord[31:12], 12'b0};  // U-type
-
-   assign immediate = (opcode == `OPCODE_STORE) ? immediate_st :
-                      ((opcode == `OPCODE_LOAD || opcode == `OPCODE_COMPUTE_IMM)) ? immediate_i : 
-                      (opcode == `OPCODE_BRANCH) ? immediate_b : 
-                      (opcode ==  `OPCODE_JAL || opcode == `OPCODE_JALR) ? immediate_j : imm_upper;
-   
-   wire [`WORD_WIDTH-1:0] R1_data_out, PC_out;
-   wire [`WORD_WIDTH-1:0] R2_data_out;
-   wire [4:0] Rdst_out;
-   wire [`WORD_WIDTH-1:0] immediate_out;
-
-    // System State 
-   RegFile RF(.AddrA(Rsrc1), .DataOutA(Rdata1), 
-	           .AddrB(Rsrc2), .DataOutB(Rdata2), 
-	           .AddrW(Rdst), .DataInW(RWrdata), .WenW(RWrEn), .CLK(clk));
-   
-   // ID/EX, need to store PC, Rdata1, Rdata2, immediate
-   Reg #(.width(32)) pipeline_ID_EX_PC(.Din(PC), .Qout(PC_out), .WE(1'b1), .CLK(clk), .RST(rst));
-   Reg #(.width(32)) pipeline_ID_EX_Rdata1(.Din(Rdata1), .Qout(R1_data_out), .WE(1'b1), .CLK(clk), .RST(rst));
-   Reg #(.width(32)) ID_EX_Rdata2 (.Din(Rdata2), .Qout(R2_data_out), .WE(1'b1), .CLK(clk), .RST(rst));
-   Reg #(.width(32)) pipeline_ID_EX_immediate(.Din(immediate), .Qout(immediate_out), .WE(1'b1), .CLK(clk), .RST(rst));
-   Reg #(.width(5)) pipeline_ID_EX_Rdst (.Din(Rdst), .Qout(Rdst_out), .WE(1'b1), .CLK(clk), .RST(rst)); // to WB stage
-              
-   // Control signals for Next Stage Pipeline Register
-   Reg #(.width(1)) pipeline_ID_EX_ALUOp1();
-   Reg #(.width(1)) pipeline_ID_EX_ALUOp0();
-   Reg #(.width(1)) pipeline_ID_EX_ALUSrc(.Din(ALUSrc), .Qout(ALUSrc_out), .WE(1'b1), .CLK(clk), .RST(rst));
-   Reg #(.width(1)) pipeline_ID_EX_Branch(.Din(branch_taken), .Qout(branch_taken_out), .WE(1'b1), .CLK(clk), .RST(rst)); 
-   Reg #(.width(1)) pipeline_ID_EX_Mem_Read(.Din(MemReadEn), .Qout(mem_read_out), .WE(1'b1), .CLK(clk), .RST(rst));
-   Reg #(.width(1)) pipeline_ID_EX_Mem_Write(.Din(MemWrEn), .Qout(mem_write_out), .WE(1'b1), .CLK(clk), .RST(rst));
-   Reg #(.width(1)) pipeline_ID_EX_Reg_Write(.Din(RegWrEn), .Qout(reg_write_out), .WE(1'b1), .CLK(clk), .RST(rst));
-   Reg #(.width(1)) pipeline_ID_EX_Mem_To_Reg(.Din(MemToReg), .Qout(mem_to_reg_out), .WE(1'b1), .CLK(clk), .RST(rst));
-   Reg #(.width(1)) pipeline_ID_EX_Reg_Read(.Din(RegRead), .Qout(reg_read_outt), .WE(1'b1), .CLK(clk), .RST(rst));
-
-   wire branch_taken_out, mem_read_out, mem_write_out,reg_write_out, mem_to_reg_out, reg_read_out;
-   wire ALUSrc_out;
-
-   assign branch_taken = (opcode == `OPCODE_BRANCH) && (
-                         (funct3 == `FUNC_BEQ  && (Rdata1 == Rdata2)) ||   // BEQ
-                         (funct3 == `FUNC_BNE  && (Rdata1 != Rdata2)) ||   // BNE
-                         (funct3 == `FUNC_BLT  && ($signed(Rdata1) < $signed(Rdata2))) || // BLT
-                         (funct3 == `FUNC_BGE  && ($signed(Rdata1) >= $signed(Rdata2))) || // BGE
-                         (funct3 == `FUNC_BLTU && (Rdata1 < Rdata2)) ||    // BLTU (unsigned)
-                         (funct3 == `FUNC_BGEU && (Rdata1 >= Rdata2)));     // BGEU (unsigned)
-
-   assign MemReadEn =  !invalid_op && (opcode == `OPCODE_LOAD);
-
-   assign MemWrEn = !invalid_op && (opcode == `OPCODE_STORE);
-  
-   assign MemToReg = !invalid_op && (opcode == `OPCODE_LOAD);
-   
-   assign RegRead = !invalid_op && (opcode == `OPCODE_COMPUTE || opcode == `OPCODE_COMPUTE_IMM || opcode == `OPCODE_LOAD || 
-                    opcode == `OPCODE_STORE || opcode == `OPCODE_BRANCH);
-
-   assign RWrEn = !invalid_op && (opcode == `OPCODE_COMPUTE || opcode == `OPCODE_COMPUTE_IMM || opcode == `OPCODE_LOAD ||
-                   opcode == `OPCODE_LUI || opcode == `OPCODE_AUIPC || opcode == `OPCODE_MULDIV ||
-                   opcode == `OPCODE_JAL || opcode == `OPCODE_JALR || opcode == `OPCODE_MULDIV);
-
-   assign ALUSrc = !invalid_op && (opcode == `OPCODE_COMPUTE_IMM || opcode == `OPCODE_LOAD || opcode == `OPCODE_STORE) ? 1'b1 : 1'b0;
-
-   // EX/MEM, need to store PC, ALUresult, Data Address, data for store
-   reg [31:0] pipeline_EX_MEM_PC; 
-   reg [31:0] pipeline_EX_MEM_ALUresult;
-   reg [31:0] pipeline_EX_MEM_DataAddr;
-   reg [31:0] pipeline_EX_MEM_StoreData; 
-   reg [4:0]  pipeline_EX_MEM_Rdst; 
-
-   // Control signals for next pipeline register
-   reg pipeline_EX_MEM_Branch, pipeline_EX_MEM_Mem_Read, pipeline_EX_MEM_Mem_Write,
-       pipeline_EX_MEM_Reg_Write, pipeline_EX_MEM_Reg_Read;
-
-   // MEM/WB, need to store address, and data from load
-   reg [31:0] pipeline_MEM_WB_DataAddr;
-   reg [31:0] pipeline_MEM_WB_LoadData; 
-   reg [4:0]  pipeline_MEM_WB_Rdst; // Write back to register file
-   // Control signals for next pipeline register
-   reg pipeline_MEM_WB_Reg_Write, pipeline_MEM_WB_Reg_Read;
-
-   // Only supports R-TYPE and I-TYPE
    assign halt = invalid_op;
 
    assign Inv_R_type = ((opcode == `OPCODE_COMPUTE) && 
@@ -256,16 +145,142 @@ module PipelinedCPU(halt, clk, rst);
 
    assign invalid_op = !(Inv_R_type || Inv_I_type || Inv_Loads || Inv_B_type || Inv_J_type || Inv_U_type || Inv_S_type || Inv_MulDiv ); 
 
-   // control signal for R-type vs I-type instruction (0 for R, 1 for immediate)
    
-   assign EACalc_control =  (opcode == `OPCODE_LOAD || opcode == `OPCODE_STORE) ? 1'b1: 1'b0;
-   assign muldiv_control = !invalid_op && (opcode == `OPCODE_MULDIV) && (funct7 == `AUX_FUNC_M_EXT) ? 1'b1: 1'b0;
+   // stall (WE) -- hold ; on the divs and mults
+   // we >> jumps in the last stage
+   // if we need something pushed out off the pipeline, put nops after it
 
-   assign DataAddr = (opcode == `OPCODE_LOAD || opcode == `OPCODE_STORE) ? EU_out: 32'h0000;
+   // ------------------------------------------------ IF/ID ----------------------------------------------------------------
+   // need to store PC and InstWord
+
+   // Fetch Address Datapath
+   assign PC_Plus_4 = PC + 4;
+   assign NPC = (opcode == `OPCODE_JAL)  ? jal_target :
+                (opcode == `OPCODE_JALR) ? jalr_target :
+                branch_taken             ? branch_target :
+                PC_Plus_4;
+
+   // Pipeline registers
+   // reg[63:0] pipeline_IF_ID; // Let's split this into 2 registers to make it easier to understand
+   Reg #(.width(32)) pipeline_IF_ID_PC(.Din(NPC), .Qout(PC), .WE(1'b1), .CLK(clk), .RST(rst));
+   Reg #(.width(32)) pipeline_IF_ID_InstWord(.Din(InstWord), .Qout(InstWord_out), .WE(1'b1), .CLK(clk), .RST(rst));
+   
+   // ------------------------------------------------ ID/EX ----------------------------------------------------------------
+   assign opcode = InstWord[6:0];   
+   assign Rdst = InstWord[11:7]; 
+   assign Rsrc1 = InstWord[19:15]; 
+   assign Rsrc2 = InstWord[24:20];
+   assign funct3 = InstWord[14:12];  // R-Type, I-Type, S-Type
+   assign funct7 = InstWord[31:25];  // R-Type
+
+   assign immediate_i = {{20{InstWord[31]}}, InstWord[31:20]};  // I-type
+   assign immediate_b = {{19{InstWord[31]}}, InstWord[31], InstWord[7], InstWord[30:25], InstWord[11:8], 1'b0};
+   assign immediate_j = {{11{InstWord[31]}}, InstWord[31], InstWord[19:12], InstWord[20], InstWord[30:21], 1'b0}; // J-type
+   assign immediate_st = {{20{InstWord[31]}}, InstWord[31:25], InstWord[11:7]}; // S-type
+   assign imm_upper = {InstWord[31:12], 12'b0};  // U-type
+
+   assign immediate = (opcode == `OPCODE_STORE) ? immediate_st :
+                      ((opcode == `OPCODE_LOAD || opcode == `OPCODE_COMPUTE_IMM)) ? immediate_i : 
+                      (opcode == `OPCODE_BRANCH) ? immediate_b : 
+                      (opcode ==  `OPCODE_JAL || opcode == `OPCODE_JALR) ? immediate_j : imm_upper;
+   
+   wire [`WORD_WIDTH-1:0] R1_data_out, PC_out, immediate_out, R2_data_out;
+   wire [4:0] Rdst_out;
+   
+   // ID/EX, need to store PC, Rdata1, Rdata2, immediate
+   Reg #(.width(32)) pipeline_ID_EX_PC(.Din(PC), .Qout(PC_out), .WE(1'b1), .CLK(clk), .RST(rst));
+   Reg #(.width(32)) pipeline_ID_EX_Rdata1(.Din(Rdata1), .Qout(R1_data_out), .WE(1'b1), .CLK(clk), .RST(rst));
+   Reg #(.width(32)) ID_EX_Rdata2 (.Din(Rdata2), .Qout(R2_data_out), .WE(1'b1), .CLK(clk), .RST(rst));
+   Reg #(.width(32)) pipeline_ID_EX_immediate(.Din(immediate), .Qout(immediate_out), .WE(1'b1), .CLK(clk), .RST(rst));
+   Reg #(.width(5)) pipeline_ID_EX_Rdst (.Din(Rdst), .Qout(Rdst_out), .WE(1'b1), .CLK(clk), .RST(rst)); // to WB stage
+              
+   // Control signals for Next Stage Pipeline Register
+   Reg #(.width(2)) pipeline_ID_EX_ALUOp();
+   Reg #(.width(1)) pipeline_ID_EX_ALUSrc(.Din(ALUSrc), .Qout(ALUSrc_out), .WE(1'b1), .CLK(clk), .RST(rst));
+   Reg #(.width(1)) pipeline_ID_EX_Branch(.Din(branch_taken), .Qout(branch_taken_out), .WE(1'b1), .CLK(clk), .RST(rst)); 
+   Reg #(.width(1)) pipeline_ID_EX_Mem_Read(.Din(MemReadEn), .Qout(mem_read_out), .WE(1'b1), .CLK(clk), .RST(rst));
+   Reg #(.width(1)) pipeline_ID_EX_Mem_Write(.Din(MemWrEn), .Qout(mem_write_out), .WE(1'b1), .CLK(clk), .RST(rst));
+   Reg #(.width(1)) pipeline_ID_EX_Reg_Write(.Din(RegWrEn), .Qout(reg_write_out), .WE(1'b1), .CLK(clk), .RST(rst));
+   Reg #(.width(1)) pipeline_ID_EX_Mem_To_Reg(.Din(MemToReg), .Qout(mem_to_reg_out), .WE(1'b1), .CLK(clk), .RST(rst));
+   Reg #(.width(1)) pipeline_ID_EX_Reg_Read(.Din(RegRead), .Qout(reg_read_outt), .WE(1'b1), .CLK(clk), .RST(rst));
+
+   wire branch_taken_out, mem_read_out, mem_write_out,reg_write_out, mem_to_reg_out, reg_read_out;
+   wire ALUSrc_out;
+
+   assign branch_taken = (opcode == `OPCODE_BRANCH) && (
+                         (funct3 == `FUNC_BEQ  && (Rdata1 == Rdata2)) ||   // BEQ
+                         (funct3 == `FUNC_BNE  && (Rdata1 != Rdata2)) ||   // BNE
+                         (funct3 == `FUNC_BLT  && ($signed(Rdata1) < $signed(Rdata2))) || // BLT
+                         (funct3 == `FUNC_BGE  && ($signed(Rdata1) >= $signed(Rdata2))) || // BGE
+                         (funct3 == `FUNC_BLTU && (Rdata1 < Rdata2)) ||    // BLTU (unsigned)
+                         (funct3 == `FUNC_BGEU && (Rdata1 >= Rdata2)));     // BGEU (unsigned)
+
+   assign MemReadEn =  !invalid_op && (opcode == `OPCODE_LOAD);
+
+   assign MemWrEn = !invalid_op && (opcode == `OPCODE_STORE);
+  
+   assign MemToReg = !invalid_op && (opcode == `OPCODE_LOAD);
+   
+   assign RegRead = !invalid_op && (opcode == `OPCODE_COMPUTE || opcode == `OPCODE_COMPUTE_IMM || opcode == `OPCODE_LOAD || 
+                    opcode == `OPCODE_STORE || opcode == `OPCODE_BRANCH);
+
+   assign RWrEn = !invalid_op && (opcode == `OPCODE_COMPUTE || opcode == `OPCODE_COMPUTE_IMM || opcode == `OPCODE_LOAD ||
+                   opcode == `OPCODE_LUI || opcode == `OPCODE_AUIPC || opcode == `OPCODE_MULDIV ||
+                   opcode == `OPCODE_JAL || opcode == `OPCODE_JALR || opcode == `OPCODE_MULDIV);
+
+   assign ALUSrc = !invalid_op && (opcode == `OPCODE_COMPUTE_IMM || opcode == `OPCODE_LOAD || opcode == `OPCODE_STORE) ? 1'b1 : 1'b0;
+
+
+   // ------------------------------------------------ EX/MEM ----------------------------------------------------------------
+   // need to store PC, ALUresult, Data Address, data for store
+   wire [`WORD_WIDTH-1:0] PC_mem, Rdst_mem, ALU_result_mem, DataAddr_mem, StoreData_mem;
+   wire branch_mem, mem_read_mem, mem_write_mem, reg_write_mem, mem_to_reg_mem, reg_read_mem;
+
+   Reg #(.width(32)) pipeline_EX_MEM_PC (.Din(PC_out), .Qout(PC_mem), .WE(1'b1), .CLK(clk), .RST(rst));
+   Reg #(.width(32)) pipeline_EX_MEM_ALUresult (.Din(ALU_result), .Qout(ALU_result_mem), .WE(1'b1), .CLK(clk), .RST(rst));
+   Reg #(.width(32)) pipeline_EX_MEM_DataAddr (.Din(DataAddr), .Qout(DataAddr_mem), .WE(1'b1), .CLK(clk), .RST(rst));
+   Reg #(.width(32)) pipeline_EX_MEM_StoreData (.Din(StoreData), .Qout(StoreData_mem), .WE(1'b1), .CLK(clk), .RST(rst));
+   Reg #(.width(5))  pipeline_EX_MEM_Rdst(.Din(Rdst_out), .Qout(Rdst_mem), .WE(1'b1), .CLK(clk), .RST(rst));
 
    assign StoreData = ((opcode == `OPCODE_STORE) && (funct3 == `FUNC_SB)) ? {{24{Rdata2[7]}}, Rdata2[7:0]} :
                       ((opcode == `OPCODE_STORE) && ((funct3 == `FUNC_SH))) ? {{16{Rdata2[15]}}, Rdata2[15:0]} :
                       ((opcode == `OPCODE_STORE) && (funct3 == `FUNC_SW)) ? Rdata2 : 32'hXX;
+
+   // rename for whatever EU_out is named as
+   assign DataAddr = (opcode == `OPCODE_LOAD || opcode == `OPCODE_STORE) ? EU_out: 32'h0000;
+
+   // Control signals for next pipeline register
+   Reg #(.width(1)) pipeline_EX_MEM_Branch (.Din(branch_taken_out), .Qout(branch_taken), .WE(1'b1), .CLK(clk), .RST(rst));
+   Reg #(.width(1)) pipeline_EX_MEM_Mem_Read (.Din(mem_read_out), .Qout(mem_read_mem), .WE(1'b1), .CLK(clk), .RST(rst));
+   Reg #(.width(1)) pipeline_EX_MEM_Mem_Write (.Din(mem_write_out), .Qout(mem_write_mem), .WE(1'b1), .CLK(clk), .RST(rst));
+   Reg #(.width(1)) pipeline_EX_MEM_Reg_Write (.Din(reg_write_out), .Qout(reg_write_mem), .WE(1'b1), .CLK(clk), .RST(rst));
+   Reg #(.width(1)) pipeline_EX_MEM_Reg_Read (.Din(reg_read_out), .Qout(reg_read_mem), .WE(1'b1), .CLK(clk), .RST(rst));
+   Reg #(.width(1)) pipeline_EX_MEM_Mem_To_Reg (.Din(mem_to_reg_out), .Qout(mem_to_reg_mem), .WE(1'b1), .CLK(clk), .RST(rst));
+
+   // ------------------------------------------------ MEM/WB ----------------------------------------------------------------
+   // need to store address, and data from load, and data to be written into rd
+   wire [`WORD_WIDTH-1:0] Rdst_wb, LoadData_wb, ALU_result_wb, DataAddr_wb;
+   wire reg_write_wb, reg_read_wb
+
+   Reg #(.width(32)) pipeline_MEM_WB_ALUresult (.Din(ALU_result_mem), .Qout(ALU_result_wb), .WE(1'b1), .CLK(clk), .RST(rst));
+   Reg #(.width(32)) pipeline_MEM_WB_DataAddr (.Din(DataAddr_mem), .Qout(DataAddr_wb), .WE(1'b1), .CLK(clk), .RST(rst));
+   Reg #(.width(32)) pipeline_MEM_WB_LoadData (.Din(DataWord), .Qout(LoadData_wb), .WE(1'b1), .CLK(clk), .RST(rst));
+   Reg #(.width(5))  pipeline_MEM_WB_Rdst (.Din(Rdst_mem), .Qout(Rdst_wb), .WE(1'b1), .CLK(clk), .RST(rst));
+
+   // Control signals for WB stage
+   Reg #(.width(1)) pipeline_MEM_WB_Reg_Write (.Din(reg_write_mem), .Qout(reg_write_wb), .WE(1'b1), .CLK(clk), .RST(rst));
+   Reg #(.width(1)) pipeline_MEM_WB_Reg_Read (.Din(reg_read_mem), .Qout(reg_write_wb), .WE(1'b1), .CLK(clk), .RST(rst));
+
+   // System State
+   Mem   MEM(.InstAddr(PC), .InstOut(InstWord), 
+              .DataAddr(DataAddr), .DataSize(MemSize), .DataIn(StoreData), .DataOut(DataWord), .WE(MemWrEn), .CLK(clk));
+              
+   RegFile RF(.AddrA(Rsrc1), .DataOutA(Rdata1), 
+	           .AddrB(Rsrc2), .DataOutB(Rdata2), 
+	           .AddrW(Rdst), .DataInW(RWrdata), .WenW(RWrEn), .CLK(clk));
+
+   assign EACalc_control =  (opcode == `OPCODE_LOAD || opcode == `OPCODE_STORE) ? 1'b1: 1'b0;
+   assign muldiv_control = !invalid_op && (opcode == `OPCODE_MULDIV) && (funct7 == `AUX_FUNC_M_EXT) ? 1'b1: 1'b0;
 
    assign load_size = ((opcode == `OPCODE_LOAD) && ((funct3 == `FUNC_LB) || (funct3 == `FUNC_LBU))) ? `SIZE_BYTE :
                       ((opcode == `OPCODE_LOAD) && ((funct3 == `FUNC_LH) || (funct3 == `FUNC_LHU))) ? `SIZE_HWORD :
@@ -312,7 +327,7 @@ module PipelinedCPU(halt, clk, rst);
                     .aluSrc(ALUSrc),
                     .EACalc(EACalc_control),
                     .MulDiv(muldiv_control));
-   
+
 endmodule // SingleCycleCPU
 
 module MultDiv (out3, inputA, inputB, funcc, auxFuncc);
@@ -331,7 +346,6 @@ module MultDiv (out3, inputA, inputB, funcc, auxFuncc);
    wire [(`WORD_WIDTH * 2)-1:0] mul_su = signed_inputA * unsigned_inputB;
    wire [(`WORD_WIDTH * 2)-1:0] mul_uu = unsigned_inputA * unsigned_inputB;
 
-   
    wire [`WORD_WIDTH-1:0] signed_div = $signed(inputA) / $signed(inputB);
    wire [`WORD_WIDTH-1:0] unsigned_div = inputA / inputB;
    wire [`WORD_WIDTH-1:0] signed_remainder = $signed(inputA) % $signed(inputB);
