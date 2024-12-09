@@ -235,7 +235,7 @@ module PipelinedCPU(halt, clk, rst);
                    opcode == `OPCODE_LUI || opcode == `OPCODE_AUIPC || opcode == `OPCODE_MULDIV ||
                    opcode == `OPCODE_JAL || opcode == `OPCODE_JALR || opcode == `OPCODE_MULDIV);
    
-   assign isJump = !invalidop && (opcode == `OPCODE_JAL || opcode == `OPCODE_JALR);
+   assign isJump = !invalid_op && (opcode == `OPCODE_JAL || opcode == `OPCODE_JALR);
 
    assign ALUSrc = !invalid_op && (opcode == `OPCODE_COMPUTE_IMM || opcode == `OPCODE_LOAD || opcode == `OPCODE_STORE) ? 1'b1 : 1'b0;
 
