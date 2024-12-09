@@ -73,6 +73,7 @@
 
 // ------------------------------------------------------------------------------
 `define NOP 32'h00000013 // for stalls
+`define ALU_CONTROL_WIDTH 5
 
 module PipelinedCPU(halt, clk, rst);
    output halt;
@@ -318,56 +319,28 @@ module PipelinedCPU(halt, clk, rst);
 
    // Supports R-Type and I-type instructions and Loads
    
-   ExecutionUnit EU(.out(EU_out),
-                    .opA(Rdata1), 
-                    .opB(Rdata2), 
-                    .func(funct3), 
-                    .auxFunc(funct7), 
-                    .imm(immediate), 
-                    .aluSrc(ALUSrc),
-                    .EACalc(EACalc_control),
-                    .MulDiv(muldiv_control));
+   ExecutionUnit EU(.out(pipeline_EX_MEM_ALUresult),
+                    .opA(pipeline_ID_EX_Rdata1), 
+                    .opB(pipeline_ID_EX_Rdata2), 
+                    .funct3(pipeline_ID_EX_funct3), 
+                    .funct7(pipeline_ID_EX_funct7), 
+                    .imm(pipeline_ID_EX_immediate), 
+                    .aluSrc(pipeline_ID_EX_ALUSrc),
+                    .aluOp(pipeline_ID_EX_ALUOp));
 
 endmodule // SingleCycleCPU
 
-module MultDiv (out3, inputA, inputB, funcc, auxFuncc);
-   output [`WORD_WIDTH-1:0] out3;
-   input  [`WORD_WIDTH-1:0]  inputA, inputB;
-   input  [2:0] 	 funcc;
-   input  [6:0] 	 auxFuncc;
-   
-   wire signed [(`WORD_WIDTH * 2)-1:0] signed_inputA = {{`WORD_WIDTH{inputA[`WORD_WIDTH-1]}}, inputA};
-   wire signed [(`WORD_WIDTH * 2)-1:0] signed_inputB = {{`WORD_WIDTH{inputB[`WORD_WIDTH-1]}}, inputB};
-   wire  [(`WORD_WIDTH * 2)-1:0] unsigned_inputA = {{`WORD_WIDTH{1'b0}}, inputA};
-   wire  [(`WORD_WIDTH * 2)-1:0] unsigned_inputB = {{`WORD_WIDTH{1'b0}}, inputB};
-
-   wire [(`WORD_WIDTH * 2)-1:0] mul = inputA * inputB;
-   wire [(`WORD_WIDTH * 2)-1:0] mul_ss = signed_inputA * signed_inputB;
-   wire [(`WORD_WIDTH * 2)-1:0] mul_su = signed_inputA * unsigned_inputB;
-   wire [(`WORD_WIDTH * 2)-1:0] mul_uu = unsigned_inputA * unsigned_inputB;
-
-   wire [`WORD_WIDTH-1:0] signed_div = $signed(inputA) / $signed(inputB);
-   wire [`WORD_WIDTH-1:0] unsigned_div = inputA / inputB;
-   wire [`WORD_WIDTH-1:0] signed_remainder = $signed(inputA) % $signed(inputB);
-   wire [`WORD_WIDTH-1:0] unsigned_remainder = inputA % inputB;
-
-   assign out3 = (funcc == 3'b000 && auxFuncc == 7'b0000001) ? mul[31:0] :
-                 (funcc == 3'b001 && auxFuncc == 7'b0000001) ? mul_ss[63:32] :
-                 (funcc == 3'b010 && auxFuncc == 7'b0000001) ? mul_su[63:32] :
-                 (funcc == 3'b011 && auxFuncc == 7'b0000001) ? mul_uu[63:32] :
-                 (funcc == 3'b100 && auxFuncc == 7'b0000001) ? signed_div:
-                 (funcc == 3'b101 && auxFuncc == 7'b0000001) ? unsigned_div :
-                 (funcc == 3'b110 && auxFuncc == 7'b0000001) ? signed_remainder :
-                 (funcc == 3'b111 && auxFuncc == 7'b0000001) ? unsigned_remainder : 32'h00;
-endmodule
-
+//
+// ALU
+// Handles all R-type instructions (including multiplications for simplicity),
+// also used to calculate effective address
+//
 module ALU(out,             // output
            inA, inB,        // inputs
-           funct3, funct7); // control
+           ALUControl); // control
    output [`WORD_WIDTH-1:0] out;
    input  [`WORD_WIDTH-1:0] inA, inB;
-   input  [2:0] funct3;
-   input  [6:0] funct7;
+   input  [`ALU_CONTROL_WIDTH-1:0] ALUControl;
 
    wire [`WORD_WIDTH-1:0] add = inA + inB; 
    wire [`WORD_WIDTH-1:0] subtract = inA - inB;
@@ -379,17 +352,40 @@ module ALU(out,             // output
    wire [`WORD_WIDTH-1:0] sll = inA << inB[4:0];
    wire [`WORD_WIDTH-1:0] srl = inA >> inB[4:0];
    wire [`WORD_WIDTH-1:0] sra =($signed(inA)) >>> inB[4:0];
+
+   wire signed [(`WORD_WIDTH * 2)-1:0] signed_inA = {{`WORD_WIDTH{inA[`WORD_WIDTH-1]}}, inA};
+   wire signed [(`WORD_WIDTH * 2)-1:0] signed_inB = {{`WORD_WIDTH{inB[`WORD_WIDTH-1]}}, inB};
+   wire  [(`WORD_WIDTH * 2)-1:0] unsigned_inA = {{`WORD_WIDTH{1'b0}}, inA};
+   wire  [(`WORD_WIDTH * 2)-1:0] unsigned_inB = {{`WORD_WIDTH{1'b0}}, inB};
+
+   wire [(`WORD_WIDTH * 2)-1:0] mul = inA * inB;
+   wire [(`WORD_WIDTH * 2)-1:0] mul_ss = signed_inA * signed_inB;
+   wire [(`WORD_WIDTH * 2)-1:0] mul_su = signed_inA * unsigned_inB;
+   wire [(`WORD_WIDTH * 2)-1:0] mul_uu = unsigned_inA * unsigned_inB;
+
+   wire [`WORD_WIDTH-1:0] signed_div = $signed(inA) / $signed(inB);
+   wire [`WORD_WIDTH-1:0] unsigned_div = inA / inB;
+   wire [`WORD_WIDTH-1:0] signed_remainder = $signed(inA) % $signed(inB);
+   wire [`WORD_WIDTH-1:0] unsigned_remainder = inA % inB;
    
-   assign out2 = (funct3 == 3'b000 && funct7 == 7'b0000000) ? add :
-                 (funct3 == 3'b000 && funct7 == 7'b0100000) ? subtract :
-                 (funct3 == 3'b001 && funct7 == 7'b0000000) ? sll :
-                 (funct3 == 3'b010 && funct7 == 7'b0000000) ? signed_lt :
-                 (funct3 == 3'b011 && funct7 == 7'b0000000) ? unsigned_lt :
-                 (funct3 == 3'b100 && funct7 == 7'b0000000) ? xored:
-                 (funct3 == 3'b101 && funct7 == 7'b0000000) ? srl :
-                 (funct3 == 3'b101 && funct7 == 7'b0100000) ? sra :
-                 (funct3 == 3'b110 && funct7 == 7'b0000000) ? ored :
-                 (funct3 == 3'b111 && funct7 == 7'b0000000) ? anded : 32'h00000000;
+   assign out = (ALUControl == 5'b00000) ? add :
+                (ALUControl == 5'b00001) ? subtract :
+                (ALUControl == 5'b00010) ? sll :
+                (ALUControl == 5'b00011) ? signed_lt :
+                (ALUControl == 5'b00100) ? unsigned_lt :
+                (ALUControl == 5'b00101) ? xored:
+                (ALUControl == 5'b00110) ? srl :
+                (ALUControl == 5'b00111) ? sra :
+                (ALUControl == 5'b01000) ? ored :
+                (ALUControl == 5'b01001) ? anded : 
+                (ALUControl == 5'b01010) ? mul[31:0] : // M extension
+                (ALUControl == 5'b01011) ? mul_ss[63:32] :
+                (ALUControl == 5'b01100) ? mul_su[63:32] :
+                (ALUControl == 5'b01101) ? mul_uu[63:32] :
+                (ALUControl == 5'b01110) ? signed_div:
+                (ALUControl == 5'b01111) ? unsigned_div :
+                (ALUControl == 5'b10000) ? signed_remainder :
+                (ALUControl == 5'b10000) ? unsigned_remainder : 32'h00000000;
 endmodule
 
 //
@@ -413,45 +409,56 @@ module ALU_forward_mux_2();
 
 endmodule
 
-module ALU_mux(out4, aluSrc1, eaCalc, muldiv, immresult, regresult, muldivresult);
-   output [`WORD_WIDTH-1 :0] out4;
-   input  aluSrc1, eaCalc, muldiv;
-   input [`WORD_WIDTH-1:0]  immresult, regresult, muldivresult;
+module ALUControl(ALUControl, funct3, funct7, ALUOp);
+    output [`ALU_CONTROL_WIDTH-1:0] ALUControl;
+    input  [2:0] funct3;
+    input  [6:0] funct7;
+    input  [1:0] aluOp;
+    assign ALUControl = (ALUOp == 2'b00) ? 5'b00000 : // loads, stores, jal, jalr -> add
+                        // Other ALUOp? If we move branches forward, no need for ALU
+                        (ALUOp == 2'b10) ? // R-type instructions, need to check funct3 and funct7
+                        ((funct3 == 3'b000 && funct7 == 7'b0000000) ? 5'b00000  : // add
+                         (funct3 == 3'b000 && funct7 == 7'b0100000) ? 5'b00001  : // sub
+                         (funct3 == 3'b001 && funct7 == 7'b0000000) ? 5'b00010  : // sll
+                         (funct3 == 3'b010 && funct7 == 7'b0000000) ? 5'b00011  : // signed_lt
+                         (funct3 == 3'b011 && funct7 == 7'b0000000) ? 5'b00100  : // unsigned_lt
+                         (funct3 == 3'b100 && funct7 == 7'b0000000) ? 5'b00101  : // xored
+                         (funct3 == 3'b101 && funct7 == 7'b0000000) ? 5'b00110  : // srl
+                         (funct3 == 3'b101 && funct7 == 7'b0100000) ? 5'b00111  : // sra
+                         (funct3 == 3'b110 && funct7 == 7'b0000000) ? 5'b01000  : // ored
+                         (funct3 == 3'b111 && funct7 == 7'b0000000) ? 5'b01001  : // anded
+                         (funct3 == 3'b000 && funct7 == 7'b0000001) ? 5'b01010  : // mul
+                         (funct3 == 3'b001 && funct7 == 7'b0000001) ? 5'b01011  : // mul_ss
+                         (funct3 == 3'b010 && funct7 == 7'b0000001) ? 5'b01100  : // mul_su
+                         (funct3 == 3'b011 && funct7 == 7'b0000001) ? 5'b01101  : // mul_uu
+                         (funct3 == 3'b100 && funct7 == 7'b0000001) ? 5'b01110  : // signed_div
+                         (funct3 == 3'b101 && funct7 == 7'b0000001) ? 5'b01111  : // unsigned_div
+                         (funct3 == 3'b110 && funct7 == 7'b0000001) ? 5'b10000  : // signed_remainder
+                         (funct3 == 3'b111 && funct7 == 7'b0000001) ? 5'b10001 : 5'b00000) : // unsigned_remainder
+                          5'b00000; // default to add
 
-   assign out4 = (muldiv) ? muldivresult :
-                 (eaCalc) ? immresult:
-                 (aluSrc1)? immresult: regresult;
 endmodule
 
-module ExecutionUnit(out, opA, opB, func, auxFunc, imm, aluSrc, EACalc, MulDiv);
+module ExecutionUnit(out, opA, opB, funct3, funct7, imm, aluSrc, aluOp);
    output [`WORD_WIDTH-1:0] out;
-   input [`WORD_WIDTH-1:0]  opA, opB, imm;
-   input [2:0] 	 func;
-   input [6:0] 	 auxFunc;
-   input aluSrc, EACalc, MulDiv;
+   input  [`WORD_WIDTH-1:0]  opA, opB, imm;
+   input  [2:0] funct3;
+   input  [6:0] funct7;
+   input  [1:0] aluOp;
+   input  aluSrc;
+
+   wire [`WORD_WIDTH-1:0] op_muxed;
+   wire [`ALU_CONTROL_WIDTH-1:0] ALUControl;
    
-   wire [`WORD_WIDTH-1:0] imm_result;
-   wire [`WORD_WIDTH-1:0] reg_result;
-   wire [`WORD_WIDTH-1:0] muldiv_result;
-  
-   ALU alu(.out(reg_result),
+   ALU alu(.out(out),
            .inA(opA),
-           .inB(opB), 
-           .funct3(func), 
-           .funct7(auxFunc));
+           .inB(opB_muxed), 
+           .ALUControl(ALUControl));
 
-   MultDiv multiplier(.out3(muldiv_result),
-                      .inputA(opA),
-                      .inputB(opB),
-                      .funcc(func),
-                      .auxFuncc(auxFunc));
+   ALUControl alu_control(ALUControl, funct3, funct7, ALUOp);
 
-   ALU_mux mux (.out4(out),
-               .aluSrc1(aluSrc),
-               .eaCalc(EACalc),
-               .muldiv(MulDiv),
-               .immresult(imm_result),
-               .regresult(reg_result),
-               .muldivresult(muldiv_result));
+   ALU_imm_mux imm_mux(.out(opB_muxed),
+                       .rs2(opB), .imm(imm),
+                       .aluSrc(aluSrc));
 
 endmodule // ExecutionUnit
