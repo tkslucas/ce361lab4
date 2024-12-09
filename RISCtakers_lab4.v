@@ -255,8 +255,7 @@ module PipelinedCPU(halt, clk, rst);
                       ((opcode == `OPCODE_STORE) && ((funct3 == `FUNC_SH))) ? {{16{Rdata2[15]}}, Rdata2[15:0]} :
                       ((opcode == `OPCODE_STORE) && (funct3 == `FUNC_SW)) ? Rdata2 : 32'hXX;
 
-   // rename for whatever EU_out is named as
-   assign DataAddr = (opcode == `OPCODE_LOAD || opcode == `OPCODE_STORE) ? EU_out: 32'h0000;
+   assign DataAddr = (opcode == `OPCODE_LOAD || opcode == `OPCODE_STORE) ? ALU_result: 32'h0000;
 
    // Control signals for next pipeline register
    Reg #(.width(1)) pipeline_EX_MEM_Branch (.Din(branch_taken_out), .Qout(branch_taken), .WE(1'b1), .CLK(clk), .RST(rst));
