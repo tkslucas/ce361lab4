@@ -50,7 +50,8 @@ module tb;
         $dumpvars();
 
         // Feel free to modify to inspect whatever you want
-        #0 $monitor($time,, "PC=%08x IR=%08x halt=%x exit=%x", CPU.PC, CPU.InstWord, halt, exit);
+        //#0 $monitor($time,, "PC=%08x IR=%08x halt=%x exit=%x", CPU.PC, CPU.InstWord, halt, exit);
+        #0 $monitor($time,, "x1=%08x x2=%08x x3=%08x x4=%08x, halt=%x, exit=%x", CPU.RF.Mem[1], CPU.RF.Mem[2], CPU.RF.Mem[3], CPU.RF.Mem[4], halt, exit);
 
         // Exit???
         wait(exit);

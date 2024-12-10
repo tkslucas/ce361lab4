@@ -6,3 +6,7 @@ risctakers_lab4
 *.vcd
 mem_out.hex
 regs_out.hex
+
+# Local backup files
+*.bak
+*.bak.v
