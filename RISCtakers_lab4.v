@@ -967,17 +967,15 @@ module HaltUnit(clk, fake_halt, halt);
 
    reg [5:0] count = 5'b00000;
    reg halt_reg = 0;
+   reg halted = 0;
 
    assign halt = halt_reg;
 
    always @ (posedge clk) begin
-	    if (!fake_halt) begin
-        count <= 0;
-      end
-      else begin
+     if (fake_halt || halted) begin
+        halted <= 1;
         if (count == 30) begin
           halt_reg <= 1;
-          count <= 0;
         end
         else begin
           count <= count + 1;
